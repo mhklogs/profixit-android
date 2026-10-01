@@ -1,0 +1,59 @@
+name: Build ProFixit APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Create mobile env
+        env:
+          EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
+          EXPO_PUBLIC_API_URL: ${{ secrets.EXPO_PUBLIC_API_URL }}
+        run: |
+          {
+            echo "EXPO_PUBLIC_SUPABASE_URL=$EXPO_PUBLIC_SUPABASE_URL"
+            echo "EXPO_PUBLIC_SUPABASE_ANON_KEY=$EXPO_PUBLIC_SUPABASE_ANON_KEY"
+            echo "EXPO_PUBLIC_API_URL=$EXPO_PUBLIC_API_URL"
+          } > .env
+          echo ".env created:"
+          sed -E 's/(ANON_KEY=).{8}.*/\1REDACTED/' .env
+
+      - name: Prebuild Android project
+        env:
+          CI: 'true'
+        run: yes | npx expo prebuild --platform android --no-install
+
+      - name: Build release APK
+        working-directory: android
+        env:
+          CI: 'true'
+        run: ./gradlew :app:assembleRelease --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: profixit-apk
+          path: android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
