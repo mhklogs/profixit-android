@@ -57,3 +57,44 @@ jobs:
           name: profixit-apk
           path: android/app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
+
+  publish-release:
+    # Only on manual dispatch: the APK lands on the GitHub Release that the
+    # website's download buttons point at, so this must not fire on every push.
+    if: github.event_name == 'workflow_dispatch'
+    needs: build-apk
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download APK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: profixit-apk
+          path: dist
+
+      - name: Publish APK to the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v1.0.0
+        run: |
+          set -euo pipefail
+          src="dist/app-release.apk"
+          test -f "$src" || { echo "missing $src"; exit 1; }
+          echo "APK size: $(stat -c%s "$src") bytes"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG exists, refreshing asset"
+            gh release upload "$TAG" "$src" --clobber
+          else
+            gh release create "$TAG" \
+              --title "ProFixit $TAG" \
+              --notes "Contractor Android app. Built automatically by CI."
+          fi
+
+      - name: Verify the download URL the website uses
+        run: |
+          set -euo pipefail
+          url="https://github.com/${{ github.repository }}/releases/latest/download/ProFixit.apk"
+          echo "checking $url"
+          curl -sIL -o /dev/null -w "final status: %{http_code}\n" "$url"
