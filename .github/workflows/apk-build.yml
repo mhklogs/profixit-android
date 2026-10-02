@@ -59,14 +59,20 @@ jobs:
           if-no-files-found: error
 
   publish-release:
-    # Only on manual dispatch: the APK lands on the GitHub Release that the
-    # website's download buttons point at, so this must not fire on every push.
+    # Only on manual dispatch: this republishes the release asset that the
+    # website's download buttons point at, so a normal push must not trigger it.
     if: github.event_name == 'workflow_dispatch'
     needs: build-apk
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      REPO: ${{ github.repository }}
     steps:
+      # gh resolves the target repo from the git remote, so a checkout is
+      # required even though no source files are needed here.
+      - uses: actions/checkout@v4
+
       - name: Download APK artifact
         uses: actions/download-artifact@v4
         with:
@@ -80,21 +86,33 @@ jobs:
         run: |
           set -euo pipefail
           src="dist/app-release.apk"
+          # The website links to releases/latest/download/ProFixit.apk,
+          # so the asset must carry that name, not the gradle default.
+          out="dist/ProFixit.apk"
+          cp "$src" "$out"
           test -f "$src" || { echo "missing $src"; exit 1; }
           echo "APK size: $(stat -c%s "$src") bytes"
 
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG exists, refreshing asset"
-            gh release upload "$TAG" "$src" --clobber
-          else
-            gh release create "$TAG" \
-              --title "ProFixit $TAG" \
-              --notes "Contractor Android app. Built automatically by CI."
-          fi
-
-      - name: Verify the download URL the website uses
-        run: |
-          set -euo pipefail
-          url="https://github.com/${{ github.repository }}/releases/latest/download/ProFixit.apk"
-          echo "checking $url"
-          curl -sIL -o /dev/null -w "final status: %{http_code}\n" "$url"
+          # A ~100 MB upload can drop mid-transfer, so retry rather than fail.
+          uploaded=0
+          for attempt in 1 2 3; do
+            if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+              echo "attempt $attempt: release $TAG exists, refreshing asset"
+              if gh release upload "$TAG" "$out" --clobber --repo "$REPO"; then
+                uploaded=1; break
+              fi
+            else
+              echo "attempt $attempt: creating release $TAG"
+              if gh release create "$TAG" "$out" \
+                   --title "ProFixit $TAG" \
+                   --notes "Contractor Android app. Built automatically by CI." \
+                   --repo "$REPO"; then
+                uploaded=1; break
+              fi
+            fi
+            echo "attempt $attempt failed, retrying in 15s"
+            sleep 15
+          done
+          test "$uploaded" -eq 1 || { echo "could not publish the APK"; exit 1; }
+          gh release view "$TAG" --repo "$REPO" --json assets \
+            --jq '.assets[] | "  asset: \(.name) \(.size) bytes"'
